@@ -270,7 +270,7 @@ InterfaceArrivalAction(
     //
     EnterCriticalSection(&Context->Lock);
 
-    if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
+    if (Context->InterfaceNotificationsEnabled)
     {
         //
         // The handle was already retrieved.
@@ -295,6 +295,8 @@ InterfaceArrivalAction(
         WriteToErrorLog(L"Could not register device notifications", Err);
         goto cleanup;
     }
+
+    Context->DeviceNotificationsEnabled = TRUE;
 
 cleanup:
 
@@ -347,9 +349,20 @@ InterfaceCallback(
         goto cleanup;
     }
 
-    if (Action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL)
+    switch (Action)
     {
+    case CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL:
         Err = InterfaceArrivalAction(Context);
+        break;
+
+    case CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL:
+        //
+        // Notify service to stop
+        //
+        SetEvent(SvcStopRequestEvent);
+        break;
+    default:
+        break;
     }
 
 cleanup:
@@ -506,32 +519,32 @@ Return Value:
     VOID
 
 --*/
-VOID
-CALLBACK
-UnregisterWorkerThreadCallback(
-    _Inout_     PTP_CALLBACK_INSTANCE Instance,
-    _Inout_opt_ PVOID                 hContext,
-    _Inout_     PTP_WORK              pWork
-    )
-{
-    PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)hContext;
+// VOID
+// CALLBACK
+// UnregisterWorkerThreadCallback(
+//     _Inout_     PTP_CALLBACK_INSTANCE Instance,
+//     _Inout_opt_ PVOID                 hContext,
+//     _Inout_     PTP_WORK              pWork
+// )
+// {
+//     PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)hContext;
 
-    EnterCriticalSection(&Context->Lock);
+//     EnterCriticalSection(&Context->Lock);
 
-    UnregisterDeviceNotifications(Context);
+//     UnregisterDeviceNotifications(Context);
 
-    //
-    // Close the device handle.
-    //
-    if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(Context->DeviceInterfaceHandle);
+//     //
+//     // Close the device handle.
+//     //
+//     if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
+//     {
+//         CloseHandle(Context->DeviceInterfaceHandle);
 
-        Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
-    }
+//         Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
+//     }
 
-    LeaveCriticalSection(&Context->Lock);
-}
+//     LeaveCriticalSection(&Context->Lock);
+// }
 
 
 /*++
@@ -551,54 +564,54 @@ Return Value:
     A Win32 error code.
 
 --*/
-DWORD
-DeviceQueryRemoveFailedAction(
-    _In_ HCMNOTIFICATION hNotify,
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
+// DWORD
+// DeviceQueryRemoveFailedAction(
+//     _In_ HCMNOTIFICATION hNotify,
+//     _In_ PDEVICE_CONTEXT Context
+//     )
+// {
+//     DWORD Err = ERROR_SUCCESS;
 
-    EnterCriticalSection(&Context->Lock);
+//     EnterCriticalSection(&Context->Lock);
 
-    //
-    // In case this callback fires before the registration call returns, make
-    // sure the notification handle is properly set.
-    //
-    Context->InterfaceNotificationHandle = hNotify;
+//     //
+//     // In case this callback fires before the registration call returns, make
+//     // sure the notification handle is properly set.
+//     //
+//     Context->InterfaceNotificationHandle = hNotify;
 
-    //
-    // Unregister the device callback, and then close the handle
-    //
-    if (!Context->Unregister)
-    {
-        Context->Unregister = TRUE;
-        SubmitThreadpoolWork(Context->Work);
-    }
+//     //
+//     // Unregister the device callback, and then close the handle
+//     //
+//     if (!Context->Unregister)
+//     {
+//         Context->Unregister = TRUE;
+//         SubmitThreadpoolWork(Context->Work);
+//     }
 
-    LeaveCriticalSection(&Context->Lock);
+//     LeaveCriticalSection(&Context->Lock);
 
-    //
-    // Wait for the callback and then re-register the device
-    //
-    WaitForThreadpoolWorkCallbacks(Context->Work, FALSE);
+//     //
+//     // Wait for the callback and then re-register the device
+//     //
+//     WaitForThreadpoolWorkCallbacks(Context->Work, FALSE);
 
-    EnterCriticalSection(&Context->Lock);
+//     EnterCriticalSection(&Context->Lock);
 
-    if (Context->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
-    {
-        Context->DeviceInterfaceHandle = OpenDevice(FALSE);
-    }
+//     if (Context->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
+//     {
+//         Context->DeviceInterfaceHandle = OpenDevice(FALSE);
+//     }
 
-    if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-    {
-        RegisterDeviceNotifications(Context);
-    }
+//     if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
+//     {
+//         RegisterDeviceNotifications(Context);
+//     }
 
-    LeaveCriticalSection(&Context->Lock);
+//     LeaveCriticalSection(&Context->Lock);
 
-    return Err;
-}
+//     return Err;
+// }
 
 
 /*++
@@ -618,35 +631,35 @@ Return Value:
     A Win32 error code.
 
 --*/
-DWORD
-DeviceRemovePendingAction(
-    _In_ HCMNOTIFICATION hNotify,
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
+// DWORD
+// DeviceRemovePendingAction(
+//     _In_ HCMNOTIFICATION hNotify,
+//     _In_ PDEVICE_CONTEXT Context
+//     )
+// {
+//     DWORD Err = ERROR_SUCCESS;
 
-    EnterCriticalSection(&Context->Lock);
+//     EnterCriticalSection(&Context->Lock);
 
-    //
-    // In case this callback fires before the registration call returns, make
-    // sure the notification handle is properly set.
-    //
-    Context->InterfaceNotificationHandle = hNotify;
+//     //
+//     // In case this callback fires before the registration call returns, make
+//     // sure the notification handle is properly set.
+//     //
+//     Context->InterfaceNotificationHandle = hNotify;
 
-    //
-    // Unregister the device callback, and then close the handle
-    //
-    if (!Context->Unregister)
-    {
-        Context->Unregister = TRUE;
-        SubmitThreadpoolWork(Context->Work);
-    }
+//     //
+//     // Unregister the device callback, and then close the handle
+//     //
+//     if (!Context->Unregister)
+//     {
+//         Context->Unregister = TRUE;
+//         SubmitThreadpoolWork(Context->Work);
+//     }
 
-    LeaveCriticalSection(&Context->Lock);
+//     LeaveCriticalSection(&Context->Lock);
 
-    return Err;
-}
+//     return Err;
+// }
 
 
 /*++
@@ -666,35 +679,35 @@ Return Value:
     A Win32 error code.
 
 --*/
-DWORD
-DeviceRemoveCompleteAction(
-    _In_ HCMNOTIFICATION hNotify,
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
+// DWORD
+// DeviceRemoveCompleteAction(
+//     _In_ HCMNOTIFICATION hNotify,
+//     _In_ PDEVICE_CONTEXT Context
+//     )
+// {
+//     DWORD Err = ERROR_SUCCESS;
 
-    EnterCriticalSection(&Context->Lock);
+//     EnterCriticalSection(&Context->Lock);
 
-    //
-    // In case this callback fires before the registration call returns, make
-    // sure the notification handle is properly set.
-    //
-    Context->InterfaceNotificationHandle = hNotify;
+//     //
+//     // In case this callback fires before the registration call returns, make
+//     // sure the notification handle is properly set.
+//     //
+//     Context->InterfaceNotificationHandle = hNotify;
 
-    //
-    // Unregister the device callback, and then close the handle
-    //
-    if (!Context->Unregister)
-    {
-        Context->Unregister = TRUE;
-        SubmitThreadpoolWork(Context->Work);
-    }
+//     //
+//     // Unregister the device callback, and then close the handle
+//     //
+//     if (!Context->Unregister)
+//     {
+//         Context->Unregister = TRUE;
+//         SubmitThreadpoolWork(Context->Work);
+//     }
 
-    LeaveCriticalSection(&Context->Lock);
+//     LeaveCriticalSection(&Context->Lock);
 
-    return Err;
-}
+//     return Err;
+// }
 
 
 /*++
@@ -747,15 +760,15 @@ DeviceCallback(
         break;
 
     case CM_NOTIFY_ACTION_DEVICEQUERYREMOVEFAILED:
-        DeviceQueryRemoveFailedAction(hNotify, Context);
+        //DeviceQueryRemoveFailedAction(hNotify, Context);
         break;
 
     case CM_NOTIFY_ACTION_DEVICEREMOVEPENDING:
-        DeviceRemovePendingAction(hNotify, Context);
+        //DeviceRemovePendingAction(hNotify, Context);
         break;
 
     case CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE:
-        DeviceRemoveCompleteAction(hNotify, Context);
+        //DeviceRemoveCompleteAction(hNotify, Context);
         break;
     }
 
@@ -804,8 +817,6 @@ RegisterDeviceNotifications(
         WriteToEventLog(L"Could not register for notifications", TRACE_LEVEL_WARNING);
         goto cleanup;
     }
-
-    Context->Unregister = FALSE;
 
 cleanup:
 
@@ -873,12 +884,15 @@ InitializeContext(
     _Out_ PDEVICE_CONTEXT *Context
     )
 {
-    DWORD Err = ERROR_SUCCESS;
-    BOOL LockInitialized = FALSE;
-    BOOL LockEntered = FALSE;
-    BOOL InterfaceNotificationsInitialized = FALSE;
-    BOOL DeviceNotificationsInitialized = FALSE;
+    DWORD           Err         = ERROR_SUCCESS;
+    BOOL            LockEntered = FALSE;
     PDEVICE_CONTEXT DeviceContext;
+
+    if (Context == NULL)
+    {
+        Err = ERROR_INVALID_PARAMETER;
+        goto cleanup;
+    }
 
     DeviceContext = (PDEVICE_CONTEXT)malloc(sizeof(DEVICE_CONTEXT));
 
@@ -888,25 +902,10 @@ InitializeContext(
         goto cleanup;
     }
 
+    ZeroMemory(DeviceContext, sizeof(DEVICE_CONTEXT));
     DeviceContext->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
-	DeviceContext->LockEnabled = FALSE;
-	DeviceContext->InterfaceNotificationsEnabled = FALSE;
-	DeviceContext->DeviceNotificationsEnabled = FALSE;
-
     InitializeCriticalSection(&DeviceContext->Lock);
-	DeviceContext->LockEnabled = TRUE;
-
-    DeviceContext->Work = CreateThreadpoolWork(UnregisterWorkerThreadCallback, (PVOID)DeviceContext, NULL);
-
-    if (DeviceContext->Work == NULL)
-    {
-        Err = GetLastError();
-        WriteToErrorLog(L"Could not create worker thread callback", Err);
-        goto cleanup;
-    }
-
-    DeviceContext->DeviceNotificationHandle = NULL;
-    DeviceContext->InterfaceNotificationHandle = NULL;
+    DeviceContext->LockEnabled = TRUE;
 
     //
     // Register for device interface events to open and close the handle to
@@ -930,6 +929,12 @@ InitializeContext(
     // notifications.  The lock could be moved earlier, but for sample
 	// purposes this is the proper way to initialize notifications.
     //
+    if (DeviceContext->DeviceNotificationsEnabled)
+    {
+        Err = ERROR_SUCCESS;
+        goto cleanup;
+    }
+
     if (DeviceContext->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
     {
         DeviceContext->DeviceInterfaceHandle = OpenDevice(FALSE);
@@ -952,16 +957,23 @@ InitializeContext(
     // If OpenDevice ends up returning INVALID_HANDLE_VALUE, that's fine
     // since a notification for the interface will arrive later.
     //
+	*Context      = DeviceContext;
+	DeviceContext = NULL;
 
 cleanup:
 
     if (LockEntered)
     {
-        LeaveCriticalSection(&DeviceContext->Lock);
-    }
+        if (DeviceContext == NULL)
+        {
+            LeaveCriticalSection(&(*Context)->Lock);
+        }
+        else
+        {
+            LeaveCriticalSection(&DeviceContext->Lock);
+        }
 
-	*Context = DeviceContext;
-	DeviceContext = NULL;
+    }
 
     if (DeviceContext != NULL)
     {
@@ -1003,19 +1015,6 @@ CloseContext(
         goto cleanup;
     }
 
-    EnterCriticalSection(&Context->Lock);
-
-    if (!Context->Unregister)
-    {
-        //
-        // Unregister from the callback here.
-        //
-        Unregister = TRUE;
-        Context->Unregister = TRUE;
-    }
-
-    LeaveCriticalSection(&Context->Lock);
-
     //
     // Unregister from the interface first, so that re-appearance of the interface
     // doesn't cause us to register device events again.
@@ -1030,21 +1029,14 @@ CloseContext(
 		}
 	}
 
-    if (Unregister)
+    if (Context->DeviceNotificationsEnabled)
     {
-		if (Context->DeviceNotificationsEnabled)
-		{
-			Err = UnregisterDeviceNotifications(Context);
+        Err = UnregisterDeviceNotifications(Context);
 
-			if (Err != ERROR_SUCCESS)
-			{
-				WriteToErrorLog(L"Could not unregister device notifications", Err);
-			}
-		}
-    }
-    else
-    {
-        WaitForThreadpoolWorkCallbacks(Context->Work, FALSE);
+        if (Err != ERROR_SUCCESS)
+        {
+            WriteToErrorLog(L"Could not unregister device notifications", Err);
+        }
     }
 
     //
@@ -1054,16 +1046,13 @@ CloseContext(
     if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
     {
         CloseHandle(Context->DeviceInterfaceHandle);
-
         Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
     }
 
-    if (Context->Work != NULL)
+    if (Context->LockEnabled)
     {
-        CloseThreadpoolWork(Context->Work);
+        DeleteCriticalSection(&Context->Lock);
     }
-
-    DeleteCriticalSection(&Context->Lock);
 
     free(Context);
 

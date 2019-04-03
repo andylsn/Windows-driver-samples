@@ -141,8 +141,6 @@ CSampleService::OnStart(
     PWSTR *Argv
     )
 {
-	__debugbreak();
-
     //
     // Log a service start message to the Application log.
     //

@@ -53,17 +53,17 @@ DEFINE_GUID(GUID_DEVINTERFACE_OSRUSBFX2,
 typedef struct _DEVICE_CONTEXT {
     HANDLE DeviceInterfaceHandle;
     CRITICAL_SECTION Lock;
-	BOOL LockEnabled;
-    PTP_WORK Work;
-    BOOL Unregister;
+    BOOL LockEnabled;
     HCMNOTIFICATION InterfaceNotificationHandle;
 	BOOL InterfaceNotificationsEnabled;
     HCMNOTIFICATION DeviceNotificationHandle;
 	BOOL DeviceNotificationsEnabled;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
+extern HANDLE SvcStopRequestEvent;
+
 //
-// Define the structures that will be used by the IOCTL 
+// Define the structures that will be used by the IOCTL
 // interface to the driver
 //
 
@@ -71,7 +71,7 @@ typedef struct _DEVICE_CONTEXT {
 // BAR_GRAPH_STATE
 //
 // BAR_GRAPH_STATE is a bit field structure with each
-//  bit corresponding to one of the bar graph on the 
+//  bit corresponding to one of the bar graph on the
 //  OSRFX2 Development Board
 //
 #include <pshpack1.h>
@@ -81,10 +81,10 @@ typedef struct _BAR_GRAPH_STATE {
 
         struct {
             //
-            // Individual bars starting from the 
-            //  top of the stack of bars 
+            // Individual bars starting from the
+            //  top of the stack of bars
             //
-            // NOTE: There are actually 10 bars, 
+            // NOTE: There are actually 10 bars,
             //  but the very top two do not light
             //  and are not counted here
             //
@@ -112,7 +112,7 @@ typedef struct _BAR_GRAPH_STATE {
 // SWITCH_STATE
 //
 // SWITCH_STATE is a bit field structure with each
-//  bit corresponding to one of the switches on the 
+//  bit corresponding to one of the switches on the
 //  OSRFX2 Development Board
 //
 typedef struct _SWITCH_STATE {
@@ -120,7 +120,7 @@ typedef struct _SWITCH_STATE {
     union {
         struct {
             //
-            // Individual switches starting from the 
+            // Individual switches starting from the
             //  left of the set of switches
             //
             UCHAR Switch1 : 1;

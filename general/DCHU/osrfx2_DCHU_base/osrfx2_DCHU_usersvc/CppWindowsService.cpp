@@ -57,18 +57,18 @@ Return Value:
     VOID
 
 --*/
-INT
-wmain(
-    INT    Argc,
-    WCHAR *Argv[]
-    )
-{
-    CSampleService service(SERVICE_NAME);
-
-    if (!CServiceBase::Run(service))
-    {
-        wprintf(L"Service failed to run w/err 0x%08lx\n", GetLastError());
-    }
-
-    return 0;
-}
+//INT
+//wmain(
+//    INT    Argc,
+//    WCHAR *Argv[]
+//    )
+//{
+//    CSampleService service(SERVICE_NAME);
+//
+//    if (!CServiceBase::Run(service))
+//    {
+//        wprintf(L"Service failed to run w/err 0x%08lx\n", GetLastError());
+//    }
+//
+//    return 0;
+//}
