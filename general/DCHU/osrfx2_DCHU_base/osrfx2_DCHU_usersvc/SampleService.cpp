@@ -155,7 +155,7 @@ CSampleService::OnStart(
     //
     // Set up the context, and register for notifications.
     //
-    InitializeContext(&m_Context);
+    //InitializeContext(&m_Context);
 
     //
     // Queue the main service function for execution in a worker thread.
@@ -248,5 +248,5 @@ CSampleService::OnStop()
     //
     // Clean up the context after the worker thread has finished.
     //
-    CloseContext(m_Context);
+    //CloseContext(m_Context);
 }

@@ -56,412 +56,6 @@ SetVariables()
 
 Routine Description:
 
-    Retrieves the device path of a given interface.
-
-Arguments:
-
-    InterfaceGuid    - The GUID of the interface to search for
-
-    DevicePath       - The resulting device path
-
-    DevicePathLength - The length of DevicePath
-
-Return Value:
-
-    TRUE if the function succeeded and FALSE otherwise.  Errors
-    are logged in the Application event log.
-
---*/
-_Success_(return)
-BOOL
-GetDevicePath(
-    _In_ LPGUID InterfaceGuid,
-    _Out_writes_z_(DevicePathLength) PWCHAR DevicePath,
-    _In_ size_t DevicePathLength
-    )
-{
-    HRESULT hr = E_FAIL;
-    CONFIGRET cr = CR_SUCCESS;
-    PWSTR DeviceInterfaceList = NULL;
-    ULONG DeviceInterfaceListLength = 0;
-    PWSTR NextInterface;
-
-    //
-    // Determine if there are any interfaces that match the OSRFX2 device.
-    //
-    cr = CM_Get_Device_Interface_List_Size(&DeviceInterfaceListLength,
-                                           InterfaceGuid,
-                                           NULL,
-                                           CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
-
-    if (cr != CR_SUCCESS)
-    {
-        WriteToErrorLog(L"CM_Get_DeviceInterface_List_Size",
-                        CM_MapCrToWin32Err(cr, ERROR_FILE_NOT_FOUND));
-        goto cleanup;
-    }
-
-    if (DeviceInterfaceListLength < 1)
-    {
-        WriteToErrorLog(L"CM_Get_DeviceInterface_List_Size",
-                        CM_MapCrToWin32Err(cr, ERROR_EMPTY));
-        goto cleanup;
-    }
-
-    DeviceInterfaceList = (PWSTR)malloc(DeviceInterfaceListLength * sizeof(WCHAR));
-
-    if (DeviceInterfaceList == NULL)
-    {
-        WriteToEventLog(L"Failed to allocate memory for the device interface list",
-                        TRACE_LEVEL_ERROR);
-        goto cleanup;
-    }
-
-    cr = CM_Get_Device_Interface_List(InterfaceGuid,
-                                      NULL,
-                                      DeviceInterfaceList,
-                                      DeviceInterfaceListLength,
-                                      CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
-
-    if (cr != CR_SUCCESS)
-    {
-        WriteToErrorLog(L"CM_Get_Device_Interface_List",
-                        CM_MapCrToWin32Err(cr, ERROR_FILE_NOT_FOUND));
-        goto cleanup;
-    }
-
-    if (*DeviceInterfaceList == UNICODE_NULL)
-    {
-        WriteToEventLog(L"CM_Get_Device_Interface_List returned an empty list",
-                        TRACE_LEVEL_ERROR);
-    }
-
-    //
-    // This sample only expects one interface for the OSRFX2 device.  For other
-    // devices, though, it maybe necessary to sift through the interfaces
-    // from CM_Get_Device_Interface_List in order to find the correct device.
-    //
-    NextInterface = DeviceInterfaceList + wcslen(DeviceInterfaceList) + 1;
-
-    if (*NextInterface != UNICODE_NULL)
-    {
-        WriteToEventLog(L"More than one device interface instance found.  "
-                        "Selecting first matching device.",
-                        TRACE_LEVEL_WARNING);
-    }
-
-    hr = StringCchCopy(DevicePath, DevicePathLength, DeviceInterfaceList);
-
-    if (FAILED(hr))
-    {
-        WriteToErrorLog(L"StringCchCopy", HRESULT_CODE(hr));
-        goto cleanup;
-    }
-
-cleanup:
-
-    if (DeviceInterfaceList != NULL)
-    {
-        free(DeviceInterfaceList);
-    }
-
-    return (cr == CR_SUCCESS);
-}
-
-
-/*++
-
-Routine Description:
-
-    Opens up the OSR USB FX2 device handle.
-
-Arguments:
-
-    Synchronous - Whether or not this device should be opened for syncrhonous
-                  access
-
-Return Value:
-
-    The handle to the OSR USB FX2 device.
-
---*/
-_Check_return_
-_Ret_notnull_
-_Success_(return != INVALID_HANDLE_VALUE)
-HANDLE
-OpenDevice(
-    _In_ BOOL Synchronous
-    )
-{
-    HANDLE DeviceHandle = INVALID_HANDLE_VALUE;
-    WCHAR DeviceName[MAX_DEVPATH_LENGTH];
-
-    if (!GetDevicePath((LPGUID)&GUID_DEVINTERFACE_OSRUSBFX2,
-                       DeviceName,
-                       sizeof(DeviceName) / sizeof(DeviceName[0])))
-    {
-        goto cleanup;
-    }
-
-    //
-    // Open a handle to the interface.
-    //
-    if (Synchronous)
-    {
-        DeviceHandle = CreateFile(DeviceName,
-                                  GENERIC_WRITE | GENERIC_READ,
-                                  FILE_SHARE_WRITE | FILE_SHARE_READ,
-                                  NULL, // default security
-                                  OPEN_EXISTING,
-                                  FILE_ATTRIBUTE_NORMAL,
-                                  NULL);
-    }
-    else
-    {
-        DeviceHandle = CreateFile(DeviceName,
-                                  GENERIC_WRITE | GENERIC_READ,
-                                  FILE_SHARE_WRITE | FILE_SHARE_READ,
-                                  NULL, // default security
-                                  OPEN_EXISTING,
-                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
-                                  NULL);
-    }
-
-    if (DeviceHandle == INVALID_HANDLE_VALUE)
-    {
-        WriteToErrorLog(L"CreateFile", GetLastError());
-    }
-    else
-    {
-        WriteToEventLog(L"Opened Device Successfully", TRACE_LEVEL_INFORMATION);
-    }
-
-cleanup:
-
-    return DeviceHandle;
-}
-
-
-/*++
-
-Routine Description:
-
-    Handles an interface arrival notification.
-
-Arguments:
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-InterfaceArrivalAction(
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
-
-    //
-    // Now that the interface has arrived, open a handle to it, and then
-    // register that handle for device events.
-    //
-    EnterCriticalSection(&Context->Lock);
-
-    if (Context->InterfaceNotificationsEnabled)
-    {
-        //
-        // The handle was already retrieved.
-        //
-        Err = ERROR_SUCCESS;
-        goto cleanup;
-    }
-
-    Context->DeviceInterfaceHandle = OpenDevice(FALSE);
-
-    if (Context->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
-    {
-        Err = GetLastError();
-        WriteToErrorLog(L"Could not open device interface", Err);
-        goto cleanup;
-    }
-
-    Err = RegisterDeviceNotifications(Context);
-
-    if (Err != ERROR_SUCCESS)
-    {
-        WriteToErrorLog(L"Could not register device notifications", Err);
-        goto cleanup;
-    }
-
-    Context->DeviceNotificationsEnabled = TRUE;
-
-cleanup:
-
-    LeaveCriticalSection(&Context->Lock);
-
-    return Err;
-}
-
-
-/*++
-
-Routine Description:
-
-    Handles an interface arrival notification.
-
-Arguments:
-
-    hNotify       - The notification that fired the callback
-
-    hContext      - The callback context
-
-    Action        - The type of notification
-
-    EventData     - Additional information about the callback
-
-    EventDataSize - The size of EventData
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-InterfaceCallback(
-    _In_ HCMNOTIFICATION       hNotify,
-    _In_ PVOID                 hContext,
-    _In_ CM_NOTIFY_ACTION      Action,
-    _In_ PCM_NOTIFY_EVENT_DATA EventData,
-    _In_ DWORD                 EventDataSize
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
-    PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)hContext;
-
-    //
-    // Validate Context.
-    //
-    if (Context == NULL)
-    {
-        goto cleanup;
-    }
-
-    switch (Action)
-    {
-    case CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL:
-        Err = InterfaceArrivalAction(Context);
-        break;
-
-    case CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL:
-        //
-        // Notify service to stop
-        //
-        SetEvent(SvcStopRequestEvent);
-        break;
-    default:
-        break;
-    }
-
-cleanup:
-
-    return Err;
-}
-
-
-/*++
-
-Routine Description:
-
-    Registers the service for notifications using the notification handle in
-    Context.
-
-Arguments:
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-RegisterInterfaceNotifications(
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
-    CONFIGRET cr;
-    CM_NOTIFY_FILTER NotifyFilter = {0};
-
-    if (Context == NULL)
-    {
-        goto cleanup;
-    }
-
-    ZeroMemory(&NotifyFilter, sizeof(NotifyFilter));
-    NotifyFilter.cbSize = sizeof(NotifyFilter);
-    NotifyFilter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
-    NotifyFilter.u.DeviceInterface.ClassGuid = GUID_DEVINTERFACE_OSRUSBFX2;
-
-    cr = CM_Register_Notification(&NotifyFilter,
-                                  (PVOID)Context,
-                                  (PCM_NOTIFY_CALLBACK)InterfaceCallback,
-                                  &Context->InterfaceNotificationHandle);
-
-    if (cr != CR_SUCCESS)
-    {
-        Err = CM_MapCrToWin32Err(cr, ERROR_INVALID_DATA);
-        WriteToErrorLog(L"CM_Register_Notification", Err);
-        goto cleanup;
-    }
-
-cleanup:
-
-    return Err;
-}
-
-
-/*++
-
-Routine Description:
-
-    Unregister for interface notifications.  Note, this routine deadlocks
-    when called from an interface callback.
-
-Arguments:
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-UnregisterInterfaceNotifications(
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    CONFIGRET cr;
-
-    if (Context->InterfaceNotificationHandle != NULL)
-    {
-        cr = CM_Unregister_Notification(Context->InterfaceNotificationHandle);
-
-        Context->InterfaceNotificationHandle = NULL;
-    }
-
-    return CM_MapCrToWin32Err(cr, ERROR_INVALID_DATA);
-}
-
-
-/*++
-
-Routine Description:
-
     Callback for when a device is being query removed.
 
 Arguments:
@@ -470,81 +64,33 @@ Arguments:
 
 Return Value:
 
-    A Win32 error code.
+    NULL
 
 --*/
-DWORD
+VOID
 DeviceQueryRemoveAction(
     _In_ PDEVICE_CONTEXT Context
     )
 {
-    DWORD Err = ERROR_SUCCESS;
+    //
+    // Remove device from device list
+    //
+    AcquireSRWLockExclusive(&DeviceListLock);
+    RemoveDeviceListEntry(&Context->ListEntry);
+    ReleaseSRWLockExclusive(&DeviceListLock);
 
-    EnterCriticalSection(&Context->Lock);
+    Context->ListEntry.Flink = Context->ListEntry.Blink = NULL;
 
-    if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
+    if (Context->DeviceHandle != INVALID_HANDLE_VALUE)
     {
         //
         // Close open handles to allow the device to exit
         //
-        CloseHandle(Context->DeviceInterfaceHandle);
+        CloseHandle(Context->DeviceHandle);
 
-        Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
+        Context->DeviceHandle = INVALID_HANDLE_VALUE;
     }
-
-    LeaveCriticalSection(&Context->Lock);
-
-    return Err;
 }
-
-
-/*++
-
-Routine Description:
-
-    This callback avoids a deadlock when unregistering device notifications.
-    Rather than calling CM_Unregister_Notification from the callback, the
-    callback gives that work to a separate thread to avoid deadlock.
-
-Arguments:
-
-    Instance - The thread's callback instance
-
-    hContext - The callback context
-
-    pWork    - The thread handle
-
-Return Value:
-
-    VOID
-
---*/
-// VOID
-// CALLBACK
-// UnregisterWorkerThreadCallback(
-//     _Inout_     PTP_CALLBACK_INSTANCE Instance,
-//     _Inout_opt_ PVOID                 hContext,
-//     _Inout_     PTP_WORK              pWork
-// )
-// {
-//     PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)hContext;
-
-//     EnterCriticalSection(&Context->Lock);
-
-//     UnregisterDeviceNotifications(Context);
-
-//     //
-//     // Close the device handle.
-//     //
-//     if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-//     {
-//         CloseHandle(Context->DeviceInterfaceHandle);
-
-//         Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
-//     }
-
-//     LeaveCriticalSection(&Context->Lock);
-// }
 
 
 /*++
@@ -561,106 +107,52 @@ Arguments:
 
 Return Value:
 
-    A Win32 error code.
+    NULL
 
 --*/
-// DWORD
-// DeviceQueryRemoveFailedAction(
-//     _In_ HCMNOTIFICATION hNotify,
-//     _In_ PDEVICE_CONTEXT Context
-//     )
-// {
-//     DWORD Err = ERROR_SUCCESS;
+VOID
+DeviceQueryRemoveFailedAction(
+    _In_ PDEVICE_CONTEXT Context
+    )
+{
+    DWORD Err                 = ERROR_SUCCESS;
+    PWSTR DeviceInterfacePath = NULL;
 
-//     EnterCriticalSection(&Context->Lock);
+    //
+    // Keep a record of device symbolic link since the callback context will
+    // be freed up during unregistration
+    //
+    DeviceInterfacePath = Context->SymbolicLink;
+    Context->SymbolicLink = NULL;
 
-//     //
-//     // In case this callback fires before the registration call returns, make
-//     // sure the notification handle is properly set.
-//     //
-//     Context->InterfaceNotificationHandle = hNotify;
+    //
+    // Remove device from device list if it is still present
+    //
+    if (Context->ListEntry.Flink != NULL)
+    {
+        AcquireSRWLockExclusive(&DeviceListLock);
+        RemoveDeviceListEntry(&Context->ListEntry);
+        ReleaseSRWLockExclusive(&DeviceListLock);
 
-//     //
-//     // Unregister the device callback, and then close the handle
-//     //
-//     if (!Context->Unregister)
-//     {
-//         Context->Unregister = TRUE;
-//         SubmitThreadpoolWork(Context->Work);
-//     }
+        Context->ListEntry.Flink = Context->ListEntry.Blink = NULL;
+    }
 
-//     LeaveCriticalSection(&Context->Lock);
+    //
+    // Unregister notifications for the old device handle from a deferred
+    // routine since CM_Unregister_Notification can not be called from a
+    // notification callback
+    //
+    QueueUserWorkItem(UnregisterDeviceNotificationsWorkerThread,
+                      Context,
+                      WT_EXECUTEDEFAULT);
 
-//     //
-//     // Wait for the callback and then re-register the device
-//     //
-//     WaitForThreadpoolWorkCallbacks(Context->Work, FALSE);
+    //
+    // Re-register for device notifications on a new device handle
+    //
+    Err = RegisterDeviceNotifications(DeviceInterfacePath);
 
-//     EnterCriticalSection(&Context->Lock);
-
-//     if (Context->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
-//     {
-//         Context->DeviceInterfaceHandle = OpenDevice(FALSE);
-//     }
-
-//     if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-//     {
-//         RegisterDeviceNotifications(Context);
-//     }
-
-//     LeaveCriticalSection(&Context->Lock);
-
-//     return Err;
-// }
-
-
-/*++
-
-Routine Description:
-
-    Handles a device remove pending notification.
-
-Arguments:
-
-    hNotify - The notification that spurred this callback
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-// DWORD
-// DeviceRemovePendingAction(
-//     _In_ HCMNOTIFICATION hNotify,
-//     _In_ PDEVICE_CONTEXT Context
-//     )
-// {
-//     DWORD Err = ERROR_SUCCESS;
-
-//     EnterCriticalSection(&Context->Lock);
-
-//     //
-//     // In case this callback fires before the registration call returns, make
-//     // sure the notification handle is properly set.
-//     //
-//     Context->InterfaceNotificationHandle = hNotify;
-
-//     //
-//     // Unregister the device callback, and then close the handle
-//     //
-//     if (!Context->Unregister)
-//     {
-//         Context->Unregister = TRUE;
-//         SubmitThreadpoolWork(Context->Work);
-//     }
-
-//     LeaveCriticalSection(&Context->Lock);
-
-//     return Err;
-// }
-
+    free(DeviceInterfacePath);
+}
 
 /*++
 
@@ -676,39 +168,35 @@ Arguments:
 
 Return Value:
 
-    A Win32 error code.
+    NULL
 
 --*/
-// DWORD
-// DeviceRemoveCompleteAction(
-//     _In_ HCMNOTIFICATION hNotify,
-//     _In_ PDEVICE_CONTEXT Context
-//     )
-// {
-//     DWORD Err = ERROR_SUCCESS;
+VOID
+DeviceRemoveCompleteAction(
+    _In_ PDEVICE_CONTEXT Context
+    )
+{
+    //
+    // Remove device from device list if it is still present
+    //
+    if (Context->ListEntry.Flink != NULL)
+    {
+        AcquireSRWLockExclusive(&DeviceListLock);
+        RemoveDeviceListEntry(&Context->ListEntry);
+        ReleaseSRWLockExclusive(&DeviceListLock);
 
-//     EnterCriticalSection(&Context->Lock);
+        Context->ListEntry.Flink = Context->ListEntry.Blink = NULL;
+    }
 
-//     //
-//     // In case this callback fires before the registration call returns, make
-//     // sure the notification handle is properly set.
-//     //
-//     Context->InterfaceNotificationHandle = hNotify;
-
-//     //
-//     // Unregister the device callback, and then close the handle
-//     //
-//     if (!Context->Unregister)
-//     {
-//         Context->Unregister = TRUE;
-//         SubmitThreadpoolWork(Context->Work);
-//     }
-
-//     LeaveCriticalSection(&Context->Lock);
-
-//     return Err;
-// }
-
+    //
+    // Unregister notifications for the old device handle from a deferred
+    // routine since CM_Unregister_Notification can not be called from a
+    // notification callback
+    //
+    QueueUserWorkItem(UnregisterDeviceNotificationsWorkerThread,
+                      Context,
+                      WT_EXECUTEDEFAULT);
+}
 
 /*++
 
@@ -742,16 +230,13 @@ DeviceCallback(
     _In_ DWORD                 EventDataSize
     )
 {
-    DWORD Err = ERROR_SUCCESS;
     PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)hContext;
 
     //
-    // Validate Context.
+    // In case this callback fires before the registration call returns, make
+    // sure the notification handle is properly set
     //
-    if (Context == NULL)
-    {
-        goto cleanup;
-    }
+    Context->DeviceNotificationHandle = hNotify;
 
     switch (Action)
     {
@@ -760,21 +245,18 @@ DeviceCallback(
         break;
 
     case CM_NOTIFY_ACTION_DEVICEQUERYREMOVEFAILED:
-        //DeviceQueryRemoveFailedAction(hNotify, Context);
-        break;
-
-    case CM_NOTIFY_ACTION_DEVICEREMOVEPENDING:
-        //DeviceRemovePendingAction(hNotify, Context);
+        DeviceQueryRemoveFailedAction(Context);
         break;
 
     case CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE:
-        //DeviceRemoveCompleteAction(hNotify, Context);
+        DeviceRemoveCompleteAction(Context);
+        break;
+
+    default:
         break;
     }
 
-cleanup:
-
-    return Err;
+    return ERROR_SUCCESS;
 }
 
 
@@ -786,7 +268,7 @@ Routine Description:
 
 Arguments:
 
-    Context - The callback context
+    DeviceInterfacePath - The symbolic link path of the device interface
 
 Return Value:
 
@@ -795,189 +277,386 @@ Return Value:
 --*/
 DWORD
 RegisterDeviceNotifications(
-    _In_ PDEVICE_CONTEXT Context
+    _In_ PCWSTR DeviceInterfacePath
     )
 {
-    DWORD Err = ERROR_SUCCESS;
-    CONFIGRET cr;
-    CM_NOTIFY_FILTER NotifyFilter = {0};
+    DWORD              Err          = ERROR_SUCCESS;
+    CONFIGRET          Cr           = CR_SUCCESS;
+    PDEVICE_CONTEXT    Context      = NULL;
+    PDEVICE_LIST_ENTRY Link         = NULL;
+    DWORD              BufferSize   = 0;
+    CM_NOTIFY_FILTER   NotifyFilter = {0};
 
-    NotifyFilter.cbSize = sizeof(NotifyFilter);
-    NotifyFilter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE;
-    NotifyFilter.u.DeviceHandle.hTarget = Context->DeviceInterfaceHandle;
+    //
+    // Check whether the device interface has already been registered for device
+    // handle notifications since it can be done either in interface arrival
+    // callback routine or initial device interface setup routine
+    //
+    AcquireSRWLockShared(&DeviceListLock);
 
-    cr = CM_Register_Notification(&NotifyFilter,
-                                  (PVOID)Context,
-                                  (PCM_NOTIFY_CALLBACK)DeviceCallback,
-                                  &Context->DeviceNotificationHandle);
-
-    if (cr != CR_SUCCESS)
+    for (Link = DeviceList.Flink; Link != &DeviceList; Link = Link->Flink)
     {
-        Err = CM_MapCrToWin32Err(cr, ERROR_INVALID_DATA);
-        WriteToEventLog(L"Could not register for notifications", TRACE_LEVEL_WARNING);
-        goto cleanup;
-    }
+        Context = CONTAINING_RECORD(Link, DEVICE_CONTEXT, ListEntry);
 
-cleanup:
-
-    return Err;
-}
-
-
-/*++
-
-Routine Description:
-
-    Unregister for device notifications.
-
-Arguments:
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-UnregisterDeviceNotifications(
-    _In_ PDEVICE_CONTEXT Context
-    )
-{
-    DWORD Err = ERROR_SUCCESS;
-    CONFIGRET cr;
-
-    if (Context->DeviceNotificationHandle != NULL)
-    {
-        cr = CM_Unregister_Notification(Context->DeviceNotificationHandle);
-
-        if (cr != CR_SUCCESS)
+        if (wcscmp(DeviceInterfacePath, Context->SymbolicLink) == 0)
         {
-            Err = CM_MapCrToWin32Err(cr, ERROR_INVALID_DATA);
-            WriteToEventLog(L"Could not unregister notifications", TRACE_LEVEL_WARNING);
+            break;
         }
-
-        Context->DeviceNotificationHandle = NULL;
     }
 
-    return Err;
-}
+    ReleaseSRWLockShared(&DeviceListLock);
 
-
-/*++
-
-Routine Description:
-
-    Initialize the given PDEVICE_CONTEXT.
-
-Arguments:
-
-    Context - The callback context
-
-Return Value:
-
-    A Win32 error code.
-
---*/
-DWORD
-InitializeContext(
-    _Out_ PDEVICE_CONTEXT *Context
-    )
-{
-    DWORD           Err         = ERROR_SUCCESS;
-    BOOL            LockEntered = FALSE;
-    PDEVICE_CONTEXT DeviceContext;
-
-    if (Context == NULL)
-    {
-        Err = ERROR_INVALID_PARAMETER;
-        goto cleanup;
-    }
-
-    DeviceContext = (PDEVICE_CONTEXT)malloc(sizeof(DEVICE_CONTEXT));
-
-    if (DeviceContext == NULL)
-    {
-        Err = ERROR_OUTOFMEMORY;
-        goto cleanup;
-    }
-
-    ZeroMemory(DeviceContext, sizeof(DEVICE_CONTEXT));
-    DeviceContext->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
-    InitializeCriticalSection(&DeviceContext->Lock);
-    DeviceContext->LockEnabled = TRUE;
-
-    //
-    // Register for device interface events to open and close the handle to
-    // the interface.
-    //
-    Err = RegisterInterfaceNotifications(DeviceContext);
-
-    if (Err != ERROR_SUCCESS)
-    {
-        WriteToErrorLog(L"Could not register notifications", Err);
-        goto cleanup;
-    }
-
-	DeviceContext->InterfaceNotificationsEnabled = TRUE;
-
-    EnterCriticalSection(&DeviceContext->Lock);
-    LockEntered = TRUE;
-
-    //
-    // The interface may already have arrived while registering for
-    // notifications.  The lock could be moved earlier, but for sample
-	// purposes this is the proper way to initialize notifications.
-    //
-    if (DeviceContext->DeviceNotificationsEnabled)
+    if (Link != &DeviceList)
     {
         Err = ERROR_SUCCESS;
         goto cleanup;
     }
 
-    if (DeviceContext->DeviceInterfaceHandle == INVALID_HANDLE_VALUE)
+    //
+    // Create a new device context
+    //
+    Context = (PDEVICE_CONTEXT)malloc(sizeof(DEVICE_CONTEXT));
+
+    if (Context == NULL)
     {
-        DeviceContext->DeviceInterfaceHandle = OpenDevice(FALSE);
-    }
-
-    if (DeviceContext->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-    {
-        Err = RegisterDeviceNotifications(DeviceContext);
-
-        if (Err != ERROR_SUCCESS)
-        {
-            WriteToErrorLog(L"Could not register device notifications", Err);
-            goto cleanup;
-        }
-
-		DeviceContext->DeviceNotificationsEnabled = TRUE;
+        Err = ERROR_OUTOFMEMORY;
+        goto cleanup;
     }
 
     //
-    // If OpenDevice ends up returning INVALID_HANDLE_VALUE, that's fine
-    // since a notification for the interface will arrive later.
+    // Initialize device context
     //
-	*Context      = DeviceContext;
-	DeviceContext = NULL;
+    ZeroMemory(Context, sizeof(DEVICE_CONTEXT));
+    Context->DeviceHandle = INVALID_HANDLE_VALUE;
+
+    //
+    // Fill out the context and register device handle notifications
+    //
+    BufferSize = wcslen(DeviceInterfacePath) + 1;
+    Context->SymbolicLink = (PWSTR)malloc(BufferSize * sizeof(WCHAR));
+
+    if ((Context->SymbolicLink == NULL) ||
+        (FAILED(StringCchCopy(Context->SymbolicLink,
+                              BufferSize,
+                              DeviceInterfacePath))))
+    {
+        Err = ERROR_OUTOFMEMORY;
+        goto cleanup;
+    }
+
+    Context->DeviceHandle = CreateFile(Context->SymbolicLink,
+                                       GENERIC_WRITE | GENERIC_READ,
+                                       FILE_SHARE_WRITE | FILE_SHARE_READ,
+                                       NULL, // default security
+                                       OPEN_EXISTING,
+                                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
+                                       NULL);
+
+    if (Context->DeviceHandle == INVALID_HANDLE_VALUE)
+    {
+        Err = GetLastError();
+        goto cleanup;
+    }
+
+    NotifyFilter.cbSize = sizeof(NotifyFilter);
+    NotifyFilter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE;
+    NotifyFilter.u.DeviceHandle.hTarget = Context->DeviceHandle;
+
+    Cr = CM_Register_Notification(&NotifyFilter,
+                                  (PVOID)Context,
+                                  (PCM_NOTIFY_CALLBACK)DeviceCallback,
+                                  &Context->DeviceNotificationHandle);
+
+    if (Cr != CR_SUCCESS)
+    {
+        Err = CM_MapCrToWin32Err(Cr, ERROR_INVALID_DATA);
+        goto cleanup;
+    }
+
+    //
+    // Add the device entry to device list
+    //
+    AcquireSRWLockExclusive(&DeviceListLock);
+    InsertTailDeviceListEntry(&DeviceList, &Context->ListEntry);
+    ReleaseSRWLockExclusive(&DeviceListLock);
+
+    Context = NULL;
 
 cleanup:
 
-    if (LockEntered)
+    //
+    // Clean up device context if an error occurred.
+    //
+    if (Context != NULL)
     {
-        if (DeviceContext == NULL)
+        if (Context->SymbolicLink != NULL)
         {
-            LeaveCriticalSection(&(*Context)->Lock);
-        }
-        else
-        {
-            LeaveCriticalSection(&DeviceContext->Lock);
+            free(Context->SymbolicLink);
         }
 
+        if (Context->DeviceHandle != INVALID_HANDLE_VALUE)
+        {
+            CloseHandle(Context->DeviceHandle);
+        }
     }
 
-    if (DeviceContext != NULL)
+    return Err;
+}
+
+
+VOID
+UnregisterDeviceNotifications(
+    _Inout_ PDEVICE_CONTEXT Context
+    )
+{
+    if (Context->DeviceNotificationHandle != NULL)
     {
-		CloseContext(DeviceContext);
+        CM_Unregister_Notification(Context->DeviceNotificationHandle);
+    }
+
+    if (Context->DeviceHandle != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(Context->DeviceHandle);
+    }
+
+    if (Context->SymbolicLink != NULL)
+    {
+        free(Context->SymbolicLink);
+    }
+
+    free(Context);
+}
+
+
+/*++
+
+Routine Description:
+
+    This callback avoids a deadlock when unregistering device notifications.
+    Rather than calling CM_Unregister_Notification from the callback, the
+    callback gives that work to a separate thread to avoid deadlock.
+
+Arguments:
+
+    lpThreadParameter - The thread data passed to the function
+
+Return Value:
+
+    VOID
+
+--*/
+DWORD
+WINAPI
+UnregisterDeviceNotificationsWorkerThread(
+    _In_ PVOID lpThreadParameter
+    )
+{
+    PDEVICE_CONTEXT Context = (PDEVICE_CONTEXT)lpThreadParameter;
+
+    UnregisterDeviceNotifications(Context);
+
+    return 0;
+}
+
+
+/*++
+
+Routine Description:
+
+    Handles an interface arrival notification.
+
+Arguments:
+
+    hNotify       - The notification that fired the callback
+
+    hContext      - The callback context
+
+    Action        - The type of notification
+
+    EventData     - Additional information about the callback
+
+    EventDataSize - The size of EventData
+
+Return Value:
+
+    Notification callback should return ERROR_SUCCESS.
+
+--*/
+DWORD
+InterfaceCallback(
+    _In_ HCMNOTIFICATION       hNotify,
+    _In_ PVOID                 hContext,
+    _In_ CM_NOTIFY_ACTION      Action,
+    _In_ PCM_NOTIFY_EVENT_DATA EventData,
+    _In_ DWORD                 EventDataSize
+    )
+{
+    switch (Action)
+    {
+    case CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL:
+        //
+        // Register for device notifications
+        //
+        RegisterDeviceNotifications(EventData->u.DeviceInterface.SymbolicLink);
+        break;
+
+    case CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL:
+        //
+        // Notify service to stop
+        //
+        SetEvent(SvcStopRequestEvent);
+        break;
+    default:
+        break;
+    }
+
+    return ERROR_SUCCESS;
+}
+
+
+/*++
+
+Routine Description:
+
+    Registers the service for interface notifications
+
+Arguments:
+
+    pInterfaceNotificationHandle - Pointer to receive the HCMNOTIFICATION handle
+
+Return Value:
+
+    A Win32 error code.
+
+--*/
+DWORD
+RegisterInterfaceNotifications(
+    _Out_ PHCMNOTIFICATION pInterfaceNotificationHandle
+    )
+{
+    DWORD            Err          = ERROR_SUCCESS;
+    CONFIGRET        Cr           = CR_SUCCESS;
+    CM_NOTIFY_FILTER NotifyFilter = {0};
+
+    NotifyFilter.cbSize = sizeof(NotifyFilter);
+    NotifyFilter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+    NotifyFilter.u.DeviceInterface.ClassGuid = GUID_DEVINTERFACE_OSRUSBFX2;
+
+    //
+    // Register for device interface events to open and close the handle to
+    // the interface.
+    //
+    Cr = CM_Register_Notification(&NotifyFilter,
+                                  NULL,
+                                  (PCM_NOTIFY_CALLBACK)InterfaceCallback,
+                                  pInterfaceNotificationHandle);
+
+    if (Cr != CR_SUCCESS)
+    {
+        Err = CM_MapCrToWin32Err(Cr, ERROR_INVALID_DATA);
+        goto cleanup;
+    }
+
+cleanup:
+
+    return Err;
+}
+
+
+/*++
+
+Routine Description:
+
+    Setup device interface context by registering for device interface notifications
+
+Arguments:
+
+    NULL
+
+Return Value:
+
+    A Win32 error code.
+
+--*/
+DWORD
+SetupDeviceInterfaceContext(
+    VOID
+    )
+{
+    DWORD     Err                     = ERROR_SUCCESS;
+    CONFIGRET Cr                      = CR_SUCCESS;
+    PCWSTR    DeviceInterface         = NULL;
+    PWSTR     DeviceInterfaceList     = NULL;
+    DWORD     DeviceInterfaceListSize = 0;
+
+    //
+    // Register for device interface events to open and close the handle to
+    // the interface.
+    //
+    Err = RegisterInterfaceNotifications(&InterfaceNotificationHandle);
+
+    if (Err != ERROR_SUCCESS)
+    {
+        goto cleanup;
+    }
+
+    //
+    // The interface may already be present on the system. Retrieve a list of
+    // existing interfaces
+    //
+    do
+    {
+        Cr = CM_Get_Device_Interface_List_Size(&DeviceInterfaceListSize,
+                                               (LPGUID)&GUID_DEVINTERFACE_OSRUSBFX2,
+                                               NULL,
+                                               CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
+
+        if (Cr != CR_SUCCESS)
+        {
+            break;
+        }
+
+        if (DeviceInterfaceList != NULL)
+        {
+            free(DeviceInterfaceList);
+        }
+
+        DeviceInterfaceList = (PWSTR)malloc(DeviceInterfaceListSize * sizeof(WCHAR));
+
+        if (DeviceInterfaceList == NULL)
+        {
+            Cr = CR_OUT_OF_MEMORY;
+            break;
+        }
+
+        Cr = CM_Get_Device_Interface_List((LPGUID)&GUID_DEVINTERFACE_OSRUSBFX2,
+                                          NULL,
+                                          DeviceInterfaceList,
+                                          DeviceInterfaceListSize,
+                                          CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
+    } while (Cr == CR_BUFFER_SMALL);
+
+    if (Cr != CR_SUCCESS)
+    {
+        Err = CM_MapCrToWin32Err(Cr, ERROR_INVALID_DATA);
+        goto cleanup;
+    }
+
+    //
+    // Register for notifications on existing device interfaces
+    //
+    for (DeviceInterface = DeviceInterfaceList;
+         *DeviceInterface != L'\0';
+         DeviceInterface += wcslen(DeviceInterface) + 1)
+    {
+        RegisterDeviceNotifications(DeviceInterface);
+    }
+
+cleanup:
+
+    if (DeviceInterfaceList != NULL)
+    {
+        free(DeviceInterfaceList);
     }
 
     return Err;
@@ -988,77 +667,57 @@ cleanup:
 
 Routine Description:
 
-    Clean up the given PDEVICE_CONTEXT.
+    Clean up device interface context
 
 Arguments:
 
-    Context - The callback context
+    NULL
 
 Return Value:
 
-    A Win32 error code.
+    NULL
 
 --*/
-DWORD
-CloseContext(
-    _In_ PDEVICE_CONTEXT Context
+VOID
+CleanupDeviceInterfaceContext(
+    VOID
     )
 {
-    DWORD Err = ERROR_SUCCESS;
-    BOOL Unregister = FALSE;
+    PDEVICE_CONTEXT Context = NULL;
 
-    if (Context == NULL)
+    //
+    // Unregister from the interface first, so that re-appearance of the
+    // interface does not cause us to register device events again.
+    //
+    if (InterfaceNotificationHandle != NULL)
     {
-        //
-        // Nothing to remove.
-        //
-        goto cleanup;
+        CM_Unregister_Notification(InterfaceNotificationHandle);
+        InterfaceNotificationHandle = NULL;
     }
 
     //
-    // Unregister from the interface first, so that re-appearance of the interface
-    // doesn't cause us to register device events again.
+    // Unregister notifications for device handles.
     //
-	if (Context->InterfaceNotificationsEnabled)
-	{
-		Err = UnregisterInterfaceNotifications(Context);
-
-		if (Err != ERROR_SUCCESS)
-		{
-			WriteToErrorLog(L"Could not unregister interface notifications", Err);
-		}
-	}
-
-    if (Context->DeviceNotificationsEnabled)
+    while (TRUE)
     {
-        Err = UnregisterDeviceNotifications(Context);
+        AcquireSRWLockExclusive(&DeviceListLock);
 
-        if (Err != ERROR_SUCCESS)
+        if (IsDeviceListEmpty(&DeviceList))
         {
-            WriteToErrorLog(L"Could not unregister device notifications", Err);
+            ReleaseSRWLockExclusive(&DeviceListLock);
+            break;
         }
+
+        //
+        // Remove next device from device list
+        //
+        RemoveDeviceListEntry(DeviceList.Flink);
+
+        ReleaseSRWLockExclusive(&DeviceListLock);
+
+        Context = CONTAINING_RECORD(DeviceList.Flink, DEVICE_CONTEXT, ListEntry);
+        UnregisterDeviceNotifications(Context);
     }
-
-    //
-    // No need to lock here, UnregisterDeviceNotifications will wait for all
-    // outstanding callbacks before returning.
-    //
-    if (Context->DeviceInterfaceHandle != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(Context->DeviceInterfaceHandle);
-        Context->DeviceInterfaceHandle = INVALID_HANDLE_VALUE;
-    }
-
-    if (Context->LockEnabled)
-    {
-        DeleteCriticalSection(&Context->Lock);
-    }
-
-    free(Context);
-
-cleanup:
-
-    return Err;
 }
 
 /*++
@@ -1086,7 +745,7 @@ ClearAllBars(
 
     BarGraphState.BarsAsUChar = 0;
 
-    if (!DeviceIoControl(Context->DeviceInterfaceHandle,
+    if (!DeviceIoControl(Context->DeviceHandle,
                          IOCTL_OSRUSBFX2_SET_BAR_GRAPH_DISPLAY,
                          &BarGraphState,          // Pointer to InBuffer
                          sizeof(BAR_GRAPH_STATE), // Length of InBuffer
@@ -1141,7 +800,7 @@ LightNextBar(
 
     BarGraphState.BarsAsUChar = 1 << (UCHAR)CurrentBar;
 
-    if (!DeviceIoControl(Context->DeviceInterfaceHandle,
+    if (!DeviceIoControl(Context->DeviceHandle,
                          IOCTL_OSRUSBFX2_SET_BAR_GRAPH_DISPLAY,
                          &BarGraphState,          // Pointer to InBuffer
                          sizeof(BAR_GRAPH_STATE), // Length of InBuffer
@@ -1182,8 +841,6 @@ ControlDevice(
 {
     DWORD Err = ERROR_SUCCESS;
 
-    EnterCriticalSection(&Context->Lock);
-
     Err = ClearAllBars(Context);
 
     if (Err != ERROR_SUCCESS)
@@ -1199,8 +856,6 @@ ControlDevice(
     }
 
 cleanup:
-
-	LeaveCriticalSection(&Context->Lock);
 
     return Err;
 }

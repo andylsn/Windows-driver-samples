@@ -44,6 +44,13 @@ HANDLE                SvcStoppedEvent     = NULL;
 HANDLE                SvcStopRequestEvent = NULL;
 HANDLE                SvcStopWaitObject   = NULL;
 
+//
+// Device interface context
+//
+HCMNOTIFICATION   InterfaceNotificationHandle = NULL;
+SRWLOCK           DeviceListLock              = SRWLOCK_INIT;
+DEVICE_LIST_ENTRY DeviceList;
+
 /*++
 
 Routine Description:
@@ -81,8 +88,12 @@ VOID WINAPI ServiceMain(
     PWSTR *Argv
     )
 {
-    DWORD           Error    = NO_ERROR;
-    PDEVICE_CONTEXT pContext = NULL;
+    DWORD Err = ERROR_SUCCESS;
+
+    //
+    // Initialize global variables
+    //
+    InitializeDeviceListHead(&DeviceList);
 
     while (!IsDebuggerPresent()) {
         Sleep(1000);
@@ -95,7 +106,7 @@ VOID WINAPI ServiceMain(
 
     if (SvcStatusHandle == NULL)
     {
-        Error = GetLastError();
+        Err = GetLastError();
         goto cleanup;
     }
 
@@ -104,14 +115,9 @@ VOID WINAPI ServiceMain(
                         NO_ERROR);
 
     //
-    // Set up the context, and register for notifications.
+    // Setup device interface context
     //
-    Error = InitializeContext(&pContext);
-
-    if (Error != NO_ERROR)
-    {
-        goto cleanup;
-    }
+    Err = SetupDeviceInterfaceContext();
 
     UpdateServiceStatus(SvcStatusHandle,
                         SERVICE_START_PENDING,
@@ -126,7 +132,7 @@ VOID WINAPI ServiceMain(
 
     if (SvcStoppedEvent == NULL)
     {
-        Error = GetLastError();
+        Err = GetLastError();
         goto cleanup;
     }
 
@@ -134,7 +140,7 @@ VOID WINAPI ServiceMain(
 
     if (SvcStopRequestEvent == NULL)
     {
-        Error = GetLastError();
+        Err = GetLastError();
         goto cleanup;
     }
 
@@ -144,11 +150,11 @@ VOID WINAPI ServiceMain(
     if (!RegisterWaitForSingleObject(&SvcStopWaitObject,
                                      SvcStopRequestEvent,
                                      ServiceStopCallback,
-                                     (PVOID)pContext,
+                                     NULL,
                                      INFINITE,
                                      WT_EXECUTEONLYONCE))
     {
-        Error = GetLastError();
+        Err = GetLastError();
         goto cleanup;
     }
 
@@ -160,7 +166,7 @@ VOID WINAPI ServiceMain(
     // Queue the main service function for execution in a worker thread.
     //
     QueueUserWorkItem(&ServiceRunningWorkerThread,
-                      (PVOID)pContext,
+                      NULL,
                       WT_EXECUTELONGFUNCTION);
 
     UpdateServiceStatus(SvcStatusHandle,
@@ -169,9 +175,9 @@ VOID WINAPI ServiceMain(
 
 cleanup:
 
-    if (Error != NO_ERROR)
+    if (Err != ERROR_SUCCESS)
     {
-        ServiceStop(pContext, Error);
+        ServiceStop(Err);
     }
 }
 
@@ -242,7 +248,8 @@ ServiceRunningWorkerThread(
     _In_ PVOID lpThreadParameter
     )
 {
-    PDEVICE_CONTEXT pContext = (PDEVICE_CONTEXT)lpThreadParameter;
+    PDEVICE_CONTEXT    DeviceContext = NULL;
+    PDEVICE_LIST_ENTRY Link          = NULL;
 
     InterlockedOr(&SvcControlFlags, SERVICE_FLAGS_RUNNING);
 
@@ -251,10 +258,17 @@ ServiceRunningWorkerThread(
     //
     while ((InterlockedOr(&SvcControlFlags, 0) & SERVICE_FLAGS_RUNNING) != 0)
     {
-        //
-        // Perform main service function here...
-        //
-        ControlDevice(pContext);
+        AcquireSRWLockShared(&DeviceListLock);
+
+        for (Link = DeviceList.Flink; Link != &DeviceList; Link = Link->Flink)
+        {
+            DeviceContext = CONTAINING_RECORD(Link, DEVICE_CONTEXT, ListEntry);
+
+            ControlDevice(DeviceContext);
+        }
+
+        ReleaseSRWLockShared(&DeviceListLock);
+
 
         Sleep(2000);  // Simulate some lengthy operations.
     }
@@ -280,7 +294,7 @@ ServiceStopCallback(
     //
     QueueUserWorkItem(&ServiceStopWorkerThread,
                       lpParameter,
-                      WT_EXECUTELONGFUNCTION);
+                      WT_EXECUTEDEFAULT);
 }
 
 DWORD
@@ -289,17 +303,14 @@ ServiceStopWorkerThread(
     _In_ PVOID lpThreadParameter
     )
 {
-    PDEVICE_CONTEXT pContext = (PDEVICE_CONTEXT)lpThreadParameter;
-
-    ServiceStop(pContext, NO_ERROR);
+    ServiceStop(NO_ERROR);
 
     return 0;
 }
 
 VOID
 ServiceStop(
-    _In_ PDEVICE_CONTEXT pContext,
-    _In_ DWORD           ExitCode
+    _In_ DWORD ExitCode
     )
 {
     if (SvcStatusHandle == NULL)
@@ -319,12 +330,12 @@ ServiceStop(
     }
 
     //
-    // Clean up the context after the worker thread has finished.
+    // Clean up device context after the worker thread has finished.
     //
-    CloseContext(pContext);
+    CleanupDeviceInterfaceContext();
 
     //
-    // clean up work
+    // cleanup work
     //
     if (SvcStopWaitObject != NULL)
     {

@@ -32,8 +32,7 @@ ServiceStopCallback(
 
 VOID
 ServiceStop(
-    _In_ PDEVICE_CONTEXT pContext,
-    _In_ DWORD           ExitCode
+    _In_ DWORD ExitCode
     );
 
 DWORD
