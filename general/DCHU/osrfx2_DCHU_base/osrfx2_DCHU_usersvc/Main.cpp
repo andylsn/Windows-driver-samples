@@ -222,6 +222,7 @@ Return Value:
 
 --*/
 DWORD
+WINAPI
 DeviceCallback(
     _In_ HCMNOTIFICATION       hNotify,
     _In_ PVOID                 hContext,
@@ -248,8 +249,17 @@ DeviceCallback(
         DeviceQueryRemoveFailedAction(Context);
         break;
 
+    case CM_NOTIFY_ACTION_DEVICEREMOVEPENDING:
     case CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE:
-        DeviceRemoveCompleteAction(Context);
+        //
+        // Check if unregistration is being done in one of the callbacks
+        //
+        if (!Context->Unregistered)
+        {
+            Context->Unregistered = TRUE;
+            DeviceRemoveCompleteAction(Context);
+        }
+
         break;
 
     default:
@@ -483,6 +493,7 @@ Return Value:
 
 --*/
 DWORD
+WINAPI
 InterfaceCallback(
     _In_ HCMNOTIFICATION       hNotify,
     _In_ PVOID                 hContext,
@@ -502,9 +513,16 @@ InterfaceCallback(
 
     case CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL:
         //
-        // Notify service to stop
+        // Notify service to stop if this is the last device interface
         //
-        SetEvent(SvcStopRequestEvent);
+        AcquireSRWLockShared(&DeviceListLock);
+
+        if (IsDeviceListEmpty(&DeviceList))
+        {
+            SetEvent(SvcStopRequestEvent);
+        }
+
+        ReleaseSRWLockShared(&DeviceListLock);
         break;
     default:
         break;

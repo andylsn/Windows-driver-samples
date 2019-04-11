@@ -152,7 +152,7 @@ VOID WINAPI ServiceMain(
                                      ServiceStopCallback,
                                      NULL,
                                      INFINITE,
-                                     WT_EXECUTEONLYONCE))
+                                     WT_EXECUTEONLYONCE | WT_EXECUTEINPERSISTENTTHREAD))
     {
         Err = GetLastError();
         goto cleanup;
@@ -292,7 +292,7 @@ ServiceStopCallback(
     // Since wait object can not be unregistered in callback function, queue
     // another thread
     //
-    QueueUserWorkItem(&ServiceStopWorkerThread,
+    QueueUserWorkItem(ServiceStopWorkerThread,
                       lpParameter,
                       WT_EXECUTEDEFAULT);
 }

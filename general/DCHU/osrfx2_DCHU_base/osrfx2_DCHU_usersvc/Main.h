@@ -112,6 +112,7 @@ typedef struct _DEVICE_CONTEXT {
     PWSTR             SymbolicLink;
     HANDLE            DeviceHandle;
     HCMNOTIFICATION   DeviceNotificationHandle;
+    BOOL              Unregistered;
     DEVICE_LIST_ENTRY ListEntry;
 } DEVICE_CONTEXT, *PDEVICE_CONTEXT;
 
@@ -300,6 +301,7 @@ DeviceRemoveCompleteAction(
     );
 
 DWORD
+WINAPI
 DeviceCallback(
     _In_ HCMNOTIFICATION       hNotify,
     _In_ PVOID                 hContext,
@@ -319,6 +321,7 @@ UnregisterDeviceNotifications(
     );
 
 DWORD
+WINAPI
 InterfaceCallback(
     _In_ HCMNOTIFICATION       hNotify,
     _In_ PVOID                 hContext,
