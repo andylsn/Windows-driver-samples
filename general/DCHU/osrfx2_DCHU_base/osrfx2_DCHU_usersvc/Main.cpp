@@ -727,13 +727,17 @@ CleanupDeviceInterfaceContext(
         }
 
         //
+        // Get next device context
+        //
+        Context = CONTAINING_RECORD(DeviceList.Flink, DEVICE_CONTEXT, ListEntry);
+
+        //
         // Remove next device from device list
         //
         RemoveDeviceListEntry(DeviceList.Flink);
 
         ReleaseSRWLockExclusive(&DeviceListLock);
 
-        Context = CONTAINING_RECORD(DeviceList.Flink, DEVICE_CONTEXT, ListEntry);
         UnregisterDeviceNotifications(Context);
     }
 }
