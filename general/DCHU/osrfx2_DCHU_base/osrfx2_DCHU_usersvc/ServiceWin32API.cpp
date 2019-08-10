@@ -13,9 +13,7 @@ Module Name:
 
 Abstract:
 
-    The file defines the entry point of the application. According to the
-    arguments in the command line, the function installs or uninstalls or
-    starts the service by calling into different routines.
+    Implements functions to start/run/stop the service.
 
 Environment:
 
@@ -23,11 +21,7 @@ Environment:
 
 --*/
 
-#pragma region Includes
-#include <stdio.h>
-#include <windows.h>
-#include "ServiceWin32API.h"
-#pragma endregion
+#include "stdafx.h"
 
 //
 // Settings of the service
@@ -50,6 +44,11 @@ HANDLE                SvcStopWaitObject   = NULL;
 HCMNOTIFICATION   InterfaceNotificationHandle = NULL;
 SRWLOCK           DeviceListLock              = SRWLOCK_INIT;
 DEVICE_LIST_ENTRY DeviceList;
+
+//
+// Debugging support during development time
+//
+//#define DEBUG_SUPPORT
 
 /*++
 
@@ -74,6 +73,9 @@ wmain(
    WCHAR *Argv[]
    )
 {
+    UNREFERENCED_PARAMETER(Argc);
+    UNREFERENCED_PARAMETER(Argv);
+
     SERVICE_TABLE_ENTRY serviceTable[] =
     {
         { SERVICE_NAME, ServiceMain },
@@ -90,16 +92,23 @@ VOID WINAPI ServiceMain(
 {
     DWORD Err = ERROR_SUCCESS;
 
+    UNREFERENCED_PARAMETER(Argc);
+    UNREFERENCED_PARAMETER(Argv);
+
     //
     // Initialize global variables
     //
     InitializeDeviceListHead(&DeviceList);
+
+#ifdef DEBUG_SUPPORT
 
     while (!IsDebuggerPresent()) {
         Sleep(1000);
     }
 
     __debugbreak();
+
+#endif
 
     SvcStatusHandle = RegisterServiceCtrlHandler(SERVICE_NAME,
                                                  ServiceCtrlHandler);
@@ -112,7 +121,7 @@ VOID WINAPI ServiceMain(
 
     UpdateServiceStatus(SvcStatusHandle,
                         SERVICE_START_PENDING,
-                        NO_ERROR);
+                        ERROR_SUCCESS);
 
     //
     // Setup device interface context
@@ -121,21 +130,16 @@ VOID WINAPI ServiceMain(
 
     UpdateServiceStatus(SvcStatusHandle,
                         SERVICE_START_PENDING,
-                        NO_ERROR);
+                        ERROR_SUCCESS);
 
     //
-    // Set up any variables the service needs.
+    // Initialize device control
     //
-    SetVariables();
+    OsrFx2InitializeDevice();
 
-    SvcStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-
-    if (SvcStoppedEvent == NULL)
-    {
-        Err = GetLastError();
-        goto cleanup;
-    }
-
+    //
+    // Register callback function for stop event
+    //
     SvcStopRequestEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 
     if (SvcStopRequestEvent == NULL)
@@ -144,9 +148,6 @@ VOID WINAPI ServiceMain(
         goto cleanup;
     }
 
-    //
-    // Register callback function for stop event
-    //
     if (!RegisterWaitForSingleObject(&SvcStopWaitObject,
                                      SvcStopRequestEvent,
                                      ServiceStopCallback,
@@ -158,9 +159,20 @@ VOID WINAPI ServiceMain(
         goto cleanup;
     }
 
+    //
+    // Create stopped event for the running worker thread
+    //
+    SvcStoppedEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+    if (SvcStoppedEvent == NULL)
+    {
+        Err = GetLastError();
+        goto cleanup;
+    }
+
     UpdateServiceStatus(SvcStatusHandle,
                         SERVICE_START_PENDING,
-                        NO_ERROR);
+                        ERROR_SUCCESS);
 
     //
     // Queue the main service function for execution in a worker thread.
@@ -171,7 +183,7 @@ VOID WINAPI ServiceMain(
 
     UpdateServiceStatus(SvcStatusHandle,
                         SERVICE_RUNNING,
-                        NO_ERROR);
+                        ERROR_SUCCESS);
 
 cleanup:
 
@@ -193,8 +205,10 @@ ServiceCtrlHandler(
         //
         // Set service stop event
         //
+        UpdateServiceStatus(SvcStatusHandle, SERVICE_STOP_PENDING, ERROR_SUCCESS);
         SetEvent(SvcStopRequestEvent);
         break;
+
     default:
         break;
     }
@@ -216,7 +230,7 @@ UpdateServiceStatus(
     SvcStatus.dwServiceType             = SERVICE_WIN32_OWN_PROCESS;
     SvcStatus.dwCurrentState            = dwCurrentState;
     SvcStatus.dwWin32ExitCode           = dwWin32ExitCode;
-    SvcStatus.dwServiceSpecificExitCode = NO_ERROR;
+    SvcStatus.dwServiceSpecificExitCode = ERROR_SUCCESS;
 
     if (dwCurrentState == SERVICE_START_PENDING)
     {
@@ -251,6 +265,8 @@ ServiceRunningWorkerThread(
     PDEVICE_CONTEXT    DeviceContext = NULL;
     PDEVICE_LIST_ENTRY Link          = NULL;
 
+    UNREFERENCED_PARAMETER(lpThreadParameter);
+
     InterlockedOr(&SvcControlFlags, SERVICE_FLAGS_RUNNING);
 
     //
@@ -262,13 +278,12 @@ ServiceRunningWorkerThread(
 
         for (Link = DeviceList.Flink; Link != &DeviceList; Link = Link->Flink)
         {
-            DeviceContext = CONTAINING_RECORD(Link, DEVICE_CONTEXT, ListEntry);
+            DeviceContext = CONTAINING_DEVICE_RECORD(Link);
 
-            ControlDevice(DeviceContext);
+            OsrFx2ControlDevice(DeviceContext);
         }
 
         ReleaseSRWLockShared(&DeviceListLock);
-
 
         Sleep(2000);  // Simulate some lengthy operations.
     }
@@ -288,6 +303,8 @@ ServiceStopCallback(
     _In_ BOOLEAN TimerOrWaitFired
     )
 {
+    UNREFERENCED_PARAMETER(TimerOrWaitFired);
+
     //
     // Since wait object can not be unregistered in callback function, queue
     // another thread
@@ -303,7 +320,9 @@ ServiceStopWorkerThread(
     _In_ PVOID lpThreadParameter
     )
 {
-    ServiceStop(NO_ERROR);
+    UNREFERENCED_PARAMETER(lpThreadParameter);
+
+    ServiceStop(ERROR_SUCCESS);
 
     return 0;
 }
